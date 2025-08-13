@@ -12,45 +12,38 @@ jobs:
   run:
     runs-on: ubuntu-latest
     env:
+      # Оставляем только те переменные, которые нужны скрипту
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       DONATE_URL: ${{ secrets.DONATE_URL }}
       TZ: Europe/Moscow
-      MAIN: main.py           # если файл называется иначе — поменяй
-      WORK_DIR: .             # если код в папке (например, src) — поставь src
+    
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          # Если дефолтная ветка НЕ main, укажи тут свою ветку, например:
-          # ref: master
-
-      - name: List files (debug)
-        run: |
-          pwd
-          ls -la
-          echo "----"
-          find . -maxdepth 2 -type f -print
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps
-        working-directory: ${{ env.WORK_DIR }}
+      - name: Install dependencies
+        # Убираем working-directory, он не нужен
         run: pip install -r requirements.txt
 
       - name: Run bot
-        working-directory: ${{ env.WORK_DIR }}
-        run: python $MAIN
+        # Убираем working-directory и используем прямой вызов файла
+        run: python main.py
 
       - name: Commit state.json (if changed)
-        working-directory: ${{ env.WORK_DIR }}
+        # Убираем working-directory
         run: |
-          if [ -n "$(git status --porcelain state.json || true)" ]; then
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          if [ -n "$(git status --porcelain state.json)" ]; then
             git add state.json
-            git -c user.name="github-actions" -c user.email="github-actions@github.com" commit -m "Update state [skip ci]" || true
+            git commit -m "Update state [skip ci]"
             git push
           fi
