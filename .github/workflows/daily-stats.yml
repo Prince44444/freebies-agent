@@ -1,0 +1,53 @@
+name: Freebies bot (daily stats)
+
+on:
+  schedule:
+    - cron: "0 17 * * *"   # 20:00 МСК (17:00 UTC)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      DONATE_URL: ${{ secrets.DONATE_URL }}
+      TZ: Europe/Moscow
+      MAIN: main.py
+      WORK_DIR: .
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          # ref: main  # если дефолтная ветка иная — укажи её
+
+      - name: List files (debug)
+        run: |
+          pwd
+          ls -la
+          echo "----"
+          find . -maxdepth 2 -type f -print
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        working-directory: ${{ env.WORK_DIR }}
+        run: pip install -r requirements.txt
+
+      - name: Send stats
+        working-directory: ${{ env.WORK_DIR }}
+        run: python $MAIN --stats
+
+      - name: Commit state.json (if changed)
+        working-directory: ${{ env.WORK_DIR }}
+        run: |
+          if [ -n "$(git status --porcelain state.json || true)" ]; then
+            git add state.json
+            git -c user.name="github-actions" -c user.email="github-actions@github.com" commit -m "Update state [skip ci]" || true
+            git push
+          fi
