@@ -1,11 +1,21 @@
 import os
+import sys
 import json
 import re
 import time
 import random
+import argparse
 from datetime import datetime, timezone
+from dateutil import parser as dtp
 import requests
 import feedparser
+
+# Если используешь .env
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
 STATE_FILE = "state.json"
 
@@ -28,33 +38,12 @@ def save_state(state):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-def fetch_manual_test():
-    """Тестовые посты для проверки"""
-    return [
-        {
-            "id": "test_epic_1",
-            "title": "🎮 Бесплатная игра в Epic Games Store",
-            "url": "https://store.epicgames.com/free-games",
-            "source": "EpicGames",
-            "image_url": None,
-            "expires_at": None
-        },
-        {
-            "id": "test_steam_1", 
-            "title": "🎯 Халява в Steam - успей забрать!",
-            "url": "https://store.steampowered.com/",
-            "source": "Steam",
-            "image_url": None,
-            "expires_at": None
-        }
-    ]
-
 def fetch_gotd():
     url = "https://www.giveawayoftheday.com/feed/"
     try:
         d = feedparser.parse(url)
         items = []
-        for e in d.entries[:5]:  # Максимум 5
+        for e in d.entries[:5]:
             items.append({
                 "id": e.link,
                 "title": f"💎 {e.title}",
@@ -109,6 +98,17 @@ def fetch_epic_freebies():
                 slug = slug.split("?")[0].strip("/")
                 link = f"https://store.epicgames.com/p/{slug}" if slug else "https://store.epicgames.com/free-games"
                 
+                # Пытаемся достать конец акции
+                ends_at = None
+                try:
+                    promotions = (el.get("promotions") or {}).get("promotionalOffers") or []
+                    if promotions:
+                        offers = promotions[0].get("promotionalOffers") or []
+                        if offers and offers[0].get("endDate"):
+                            ends_at = dtp.parse(offers[0]["endDate"])
+                except Exception:
+                    pass
+
                 img = None
                 for ki in el.get("keyImages", []):
                     if ki.get("type") in ("Thumbnail", "DieselStoreFrontWide", "OfferImageWide"):
@@ -121,13 +121,13 @@ def fetch_epic_freebies():
                     "url": link,
                     "source": "EpicGames",
                     "image_url": img,
-                    "expires_at": None
+                    "expires_at": ends_at.isoformat() if ends_at else None
                 })
     except Exception as ex:
         print(f"Epic fetch error: {ex}")
     return items
+
 def fetch_reddit_gamedeals():
-    """Reddit GameDeals - самые жаркие раздачи"""
     url = "https://www.reddit.com/r/GameDeals/search.json?q=flair%3A%27100%25%27&restrict_sr=on&sort=new&t=week"
     items = []
     try:
@@ -148,18 +148,7 @@ def fetch_reddit_gamedeals():
         print(f"Reddit error: {ex}")
     return items
 
-def fetch_gg_deals():
-    """GG.deals - агрегатор всех раздач"""
-    items = []
-    try:
-        # Добавим когда найдем API
-        pass
-    except:
-        pass
-    return items
-
 def fetch_humble_bundle():
-    """Humble Bundle часто раздает игры"""
     url = "https://www.humblebundle.com/feed/freebies"
     items = []
     try:
@@ -173,23 +162,27 @@ def fetch_humble_bundle():
                 "image_url": None,
                 "expires_at": None
             })
-    except:
-        pass
+    except Exception as ex:
+        print(f"Humble error: {ex}")
     return items
+
 def collect_items():
     items = []
-    for fetcher in (fetch_gotd, fetch_sharewareonsale, fetch_epic_freebies, fetch_reddit_gamedeals, fetch_humble_bundle):
-    # Сначала тестовые
-    #items.extend(fetch_manual_test())
-    
-    # Потом реальные
-    for fetcher in (fetch_gotd, fetch_sharewareonsale, fetch_epic_freebies):
+
+    fetchers = [
+        fetch_gotd,
+        fetch_sharewareonsale,
+        fetch_epic_freebies,
+        fetch_reddit_gamedeals,
+        fetch_humble_bundle,
+    ]
+    for fetcher in fetchers:
         try:
             items.extend(fetcher())
         except Exception as ex:
             print(f"Fetcher {fetcher.__name__} failed: {ex}")
-    
-    # Убираем дубликаты
+
+    # Убираем дубликаты по URL
     seen = set()
     unique = []
     for it in items:
@@ -197,11 +190,26 @@ def collect_items():
         if key not in seen:
             seen.add(key)
             unique.append(it)
-    
     return unique
 
+def fmt_expires(expires_at_iso: str) -> str:
+    if not expires_at_iso:
+        return ""
+    try:
+        dt = dtp.parse(expires_at_iso)
+        # В API часто UTC — нормализуем
+        if not dt.tzinfo:
+            dt = dt.replace(tzinfo=timezone.utc)
+        # Переводим в МСК (UTC+3 без перехода)
+        msk_dt = dt.astimezone(timezone.utc).astimezone(timezone.utc)  # оставим UTC, а в тексте укажем UTC
+        # Если хочешь именно МСК: раскомментируй ниже и закомментируй строку выше
+        # from zoneinfo import ZoneInfo
+        # msk_dt = dt.astimezone(ZoneInfo("Europe/Moscow"))
+        return msk_dt.strftime("%d.%m %H:%M UTC")
+    except Exception:
+        return ""
+
 def render_text(item):
-    # Эмодзи по источнику
     source_emoji = {
         "EpicGames": "🎮",
         "Steam": "🎯", 
@@ -210,49 +218,68 @@ def render_text(item):
         "Reddit GameDeals": "🔥",
         "HumbleBundle": "🎪"
     }
-    
     emoji = source_emoji.get(item['source'], "🎁")
-    
-    # Красивые шаблоны
-    templates = [
+
+    expires_line = ""
+    if item.get("expires_at"):
+        hh = fmt_expires(item["expires_at"])
+        if hh:
+            expires_line = f"⏰ До {hh}\n"
+
+    body_variants = [
         f"{emoji} <b>{item['title']}</b>\n\n"
-        f"✅ Экономия до $50\n"
-        f"⏰ Ограниченное время\n"
-        f"🚀 100% бесплатно\n\n"
-        f"👇 <b>Забирай по кнопке</b>",
-        
+        f"{expires_line}"
+        f"Источник: {item['source']}\n"
+        f"Официально, без VPN (если не указано иначе).\n\n"
+        f"👇 <b>Забрать по кнопке</b>",
         f"{emoji} <b>{item['title']}</b>\n\n"
-        f"🔥 Горячая раздача!\n"
-        f"💯 Проверено, работает\n"
-        f"⚡ Успей забрать\n\n"
+        f"{expires_line}"
+        f"Проверено: ссылка рабочая.\n"
+        f"Без регистрации/с ключом — по условиям источника.\n\n"
         f"🎯 <b>Получить бесплатно ↓</b>",
-        
         f"{emoji} <b>{item['title']}</b>\n\n"
-        f"🎉 Халява дня!\n"
-        f"✨ Официальная лицензия\n"
-        f"📱 Для всех стран\n\n"
-        f"🔽 <b>Жми чтобы забрать</b>"
+        f"{expires_line}"
+        f"Подходит для коллекции и экономии бюджета.\n\n"
+        f"🔽 <b>Жми, чтобы забрать</b>",
     ]
-    
-    text = random.choice(templates)
-    
-    # Хештеги для поиска
+    text = random.choice(body_variants)
+
     tags = "\n\n#халява #бесплатно #раздача"
-    if "game" in item['title'].lower() or item['source'] in ["EpicGames", "Steam"]:
+    if "game" in item['title'].lower() or item['source'] in ["EpicGames", "Steam", "HumbleBundle", "Reddit GameDeals"]:
         tags += " #игры #games"
     else:
         tags += " #софт #программы"
-    
+
     return text + tags
+
+def send_text(text: str, inline_keyboard=None):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set")
+
+    api_base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
+    url = f"{api_base}/sendMessage"
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False,
+    }
+    if inline_keyboard:
+        data["reply_markup"] = json.dumps({"inline_keyboard": inline_keyboard}, ensure_ascii=False)
+
+    r = requests.post(url, data=data, timeout=30)
+    r.raise_for_status()
+    return True
+
 def send_telegram(item):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         raise RuntimeError("TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set")
 
     caption = render_text(item)
 
-    keyboard = {"inline_keyboard": [[{"text": "🎁 Забрать халяву", "url": item["url"]}]]}
+    keyboard = [[{"text": "🎁 Забрать халяву", "url": item["url"]}]]
     if DONATE_URL:
-        keyboard["inline_keyboard"].append([{"text": "💖 Поддержать канал", "url": DONATE_URL}])
+        keyboard.append([{"text": "💖 Поддержать канал", "url": DONATE_URL}])
 
     api_base = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
     
@@ -263,15 +290,15 @@ def send_telegram(item):
             "chat_id": TELEGRAM_CHAT_ID,
             "caption": caption,
             "parse_mode": "HTML",
-            "reply_markup": json.dumps(keyboard, ensure_ascii=False),
+            "reply_markup": json.dumps({"inline_keyboard": keyboard}, ensure_ascii=False),
             "photo": item["image_url"]
         }
         try:
             r = requests.post(url, data=data, timeout=30)
             if r.status_code == 200:
                 return True
-        except:
-            pass
+        except Exception as ex:
+            print(f"sendPhoto failed: {ex}")
 
     # Без картинки
     url = f"{api_base}/sendMessage"
@@ -280,11 +307,25 @@ def send_telegram(item):
         "text": caption,
         "parse_mode": "HTML",
         "disable_web_page_preview": False,
-        "reply_markup": json.dumps(keyboard, ensure_ascii=False),
+        "reply_markup": json.dumps({"inline_keyboard": keyboard}, ensure_ascii=False),
     }
     r = requests.post(url, data=data, timeout=30)
     r.raise_for_status()
     return True
+
+def post_daily_stats():
+    state = load_state()
+    total = len(state.get("posted", []))
+
+    text = (
+        "📊 <b>Статистика канала</b>\n\n"
+        f"🎁 Всего раздач: {total}\n"
+        "📅 Работаем: 24/7\n"
+        "🔔 Включите уведомления!\n\n"
+    )
+    if DONATE_URL:
+        text += f"💖 Поддержать канал: {DONATE_URL}"
+    return send_text(text)
 
 def main():
     print("Starting Freebies Agent...")
@@ -320,17 +361,13 @@ def main():
     print(f"Done! Posted: {posts_count} items")
 
 if __name__ == "__main__":
-    main()
-def post_daily_stats():
-    """Ежедневная статистика"""
-    state = load_state()
-    total = len(state.get("posted", []))
-    
-    text = f"📊 <b>Статистика канала</b>\n\n"
-    text += f"🎁 Всего раздач: {total}\n"
-    text += f"📅 Работаем: 24/7\n"
-    text += f"🔔 Включите уведомления!\n\n"
-    text += f"💖 Поддержать канал: {DONATE_URL}"
-    
-    # Отправляем раз в день
-    # Добавь логику по времени
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--stats", action="store_true", help="Отправить ежедневную статистику")
+    args = parser.parse_args()
+
+    if args.stats:
+        ok = post_daily_stats()
+        print("Stats sent" if ok else "Stats failed")
+        sys.exit(0)
+    else:
+        main()
