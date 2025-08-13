@@ -131,7 +131,7 @@ def collect_items():
     items = []
     
     # Сначала тестовые
-    items.extend(fetch_manual_test())
+    #items.extend(fetch_manual_test())
     
     # Потом реальные
     for fetcher in (fetch_gotd, fetch_sharewareonsale, fetch_epic_freebies):
