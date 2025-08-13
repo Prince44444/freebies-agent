@@ -126,10 +126,59 @@ def fetch_epic_freebies():
     except Exception as ex:
         print(f"Epic fetch error: {ex}")
     return items
+def fetch_reddit_gamedeals():
+    """Reddit GameDeals - самые жаркие раздачи"""
+    url = "https://www.reddit.com/r/GameDeals/search.json?q=flair%3A%27100%25%27&restrict_sr=on&sort=new&t=week"
+    items = []
+    try:
+        r = requests.get(url, headers={'User-Agent': 'FreebiesBot/1.0'}, timeout=10)
+        data = r.json()
+        for post in data.get('data', {}).get('children', [])[:5]:
+            d = post.get('data', {})
+            if '[100%' in d.get('title', ''):
+                items.append({
+                    "id": f"reddit:{d.get('id')}",
+                    "title": f"🔥 {d.get('title', '')}",
+                    "url": d.get('url', ''),
+                    "source": "Reddit GameDeals",
+                    "image_url": None,
+                    "expires_at": None
+                })
+    except Exception as ex:
+        print(f"Reddit error: {ex}")
+    return items
 
+def fetch_gg_deals():
+    """GG.deals - агрегатор всех раздач"""
+    items = []
+    try:
+        # Добавим когда найдем API
+        pass
+    except:
+        pass
+    return items
+
+def fetch_humble_bundle():
+    """Humble Bundle часто раздает игры"""
+    url = "https://www.humblebundle.com/feed/freebies"
+    items = []
+    try:
+        d = feedparser.parse(url)
+        for e in d.entries[:3]:
+            items.append({
+                "id": f"humble:{e.link}",
+                "title": f"🎮 Humble Bundle: {e.title}",
+                "url": e.link,
+                "source": "HumbleBundle",
+                "image_url": None,
+                "expires_at": None
+            })
+    except:
+        pass
+    return items
 def collect_items():
     items = []
-    
+    for fetcher in (fetch_gotd, fetch_sharewareonsale, fetch_epic_freebies, fetch_reddit_gamedeals, fetch_humble_bundle):
     # Сначала тестовые
     #items.extend(fetch_manual_test())
     
@@ -152,19 +201,49 @@ def collect_items():
     return unique
 
 def render_text(item):
+    # Эмодзи по источнику
+    source_emoji = {
+        "EpicGames": "🎮",
+        "Steam": "🎯", 
+        "GiveawayOfTheDay": "💎",
+        "SharewareOnSale": "🎁",
+        "Reddit GameDeals": "🔥",
+        "HumbleBundle": "🎪"
+    }
+    
+    emoji = source_emoji.get(item['source'], "🎁")
+    
+    # Красивые шаблоны
     templates = [
-        f"{item['title']}\n\n✅ Проверенная раздача\n⏰ Ограниченное время\n🔥 Забирай по кнопке ниже",
-        f"{item['title']}\n\n💯 Абсолютно бесплатно\n🚀 Без регистрации и СМС\n👇 Жми кнопку чтобы получить",
-        f"{item['title']}\n\n🎯 Экономия до $50\n⭐ Официальная лицензия\n📲 Получить — жми кнопку"
+        f"{emoji} <b>{item['title']}</b>\n\n"
+        f"✅ Экономия до $50\n"
+        f"⏰ Ограниченное время\n"
+        f"🚀 100% бесплатно\n\n"
+        f"👇 <b>Забирай по кнопке</b>",
+        
+        f"{emoji} <b>{item['title']}</b>\n\n"
+        f"🔥 Горячая раздача!\n"
+        f"💯 Проверено, работает\n"
+        f"⚡ Успей забрать\n\n"
+        f"🎯 <b>Получить бесплатно ↓</b>",
+        
+        f"{emoji} <b>{item['title']}</b>\n\n"
+        f"🎉 Халява дня!\n"
+        f"✨ Официальная лицензия\n"
+        f"📱 Для всех стран\n\n"
+        f"🔽 <b>Жми чтобы забрать</b>"
     ]
     
     text = random.choice(templates)
     
-    if item['source']:
-        text += f"\n\n📍 Источник: {item['source']}"
+    # Хештеги для поиска
+    tags = "\n\n#халява #бесплатно #раздача"
+    if "game" in item['title'].lower() or item['source'] in ["EpicGames", "Steam"]:
+        tags += " #игры #games"
+    else:
+        tags += " #софт #программы"
     
-    return text
-
+    return text + tags
 def send_telegram(item):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         raise RuntimeError("TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set")
